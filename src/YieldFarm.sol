@@ -1,15 +1,11 @@
-
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {IERC20} from
-    "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
-import {SafeERC20} from
-    "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
-import {ReentrancyGuard} from
-    "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 contract YieldFarm is ReentrancyGuard {
     using SafeERC20 for IERC20;
@@ -31,23 +27,14 @@ contract YieldFarm is ReentrancyGuard {
 
     // Eventos para que las aplicaciones
     // externas puedan seguir las operaciones.
-    event Deposited(
-        address indexed user,
-        uint256 amount
-    );
+    event Deposited(address indexed user, uint256 amount);
 
-    event Withdrawn(
-        address indexed user,
-        uint256 amount
-    );
+    event Withdrawn(address indexed user, uint256 amount);
 
     constructor(address lpToken_) {
         // No permitimos direcciones nulas
         // ni direcciones sin codigo.
-        if (
-            lpToken_ == address(0) ||
-            lpToken_.code.length == 0
-        ) {
+        if (lpToken_ == address(0) || lpToken_.code.length == 0) {
             revert InvalidLPToken();
         }
 
@@ -58,26 +45,18 @@ contract YieldFarm is ReentrancyGuard {
     // DEPOSITAR LP TOKENS
     // ---------------------------------------------------
 
-    function deposit(
-        uint256 amount
-    ) external nonReentrant {
+    function deposit(uint256 amount) external nonReentrant {
         if (amount == 0) {
             revert ZeroAmount();
         }
 
-        uint256 balanceBefore =
-            lpToken.balanceOf(address(this));
+        uint256 balanceBefore = lpToken.balanceOf(address(this));
 
         // Pedimos al ERC-20 que mueva los tokens
         // desde la wallet hacia nuestro farming.
-        lpToken.safeTransferFrom(
-            msg.sender,
-            address(this),
-            amount
-        );
+        lpToken.safeTransferFrom(msg.sender, address(this), amount);
 
-        uint256 balanceAfter =
-            lpToken.balanceOf(address(this));
+        uint256 balanceAfter = lpToken.balanceOf(address(this));
 
         // Comprobamos que realmente han entrado
         // los LP tokens que esperabamos.
@@ -100,9 +79,7 @@ contract YieldFarm is ReentrancyGuard {
     // RETIRAR LP TOKENS
     // ---------------------------------------------------
 
-    function withdraw(
-        uint256 amount
-    ) external nonReentrant {
+    function withdraw(uint256 amount) external nonReentrant {
         if (amount == 0) {
             revert ZeroAmount();
         }
@@ -118,14 +95,12 @@ contract YieldFarm is ReentrancyGuard {
         balances[msg.sender] -= amount;
         totalStaked -= amount;
 
-        uint256 balanceBefore =
-            lpToken.balanceOf(address(this));
+        uint256 balanceBefore = lpToken.balanceOf(address(this));
 
         // Devolver LP tokens al usuario.
         lpToken.safeTransfer(msg.sender, amount);
 
-        uint256 balanceAfter =
-            lpToken.balanceOf(address(this));
+        uint256 balanceAfter = lpToken.balanceOf(address(this));
 
         // Debe salir exactamente la cantidad pedida.
         if (balanceAfter > balanceBefore) {
@@ -143,9 +118,7 @@ contract YieldFarm is ReentrancyGuard {
     // CONSULTAR DEPOSITO DE UNA DIRECCION
     // ---------------------------------------------------
 
-    function stakedBalance(
-        address user
-    ) external view returns (uint256) {
+    function stakedBalance(address user) external view returns (uint256) {
         return balances[user];
     }
 }
