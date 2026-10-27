@@ -39,11 +39,13 @@ contract YieldFarm is ReentrancyGuard {
     error InvalidRewardSchedule();
     error RewardsAlreadyStarted();
     error NoRewards();
+    error NoStake();
 
     event Deposited(address indexed user, uint256 amount);
     event Withdrawn(address indexed user, uint256 amount);
     event RewardProgramStarted(uint256 amount, uint256 duration, uint256 rewardRate);
     event RewardClaimed(address indexed user, uint256 amount);
+    event EmergencyWithdrawn(address indexed user, uint256 amount, uint256 forfeitedRewards);
 
     constructor(address lpToken_, address rewardToken_) {
         if (lpToken_ == address(0) || lpToken_.code.length == 0) {
@@ -214,6 +216,40 @@ contract YieldFarm is ReentrancyGuard {
         }
 
         emit Withdrawn(msg.sender, amount);
+    }
+
+    function emergencyWithdraw() external nonReentrant updateReward(msg.sender) {
+        uint256 amount = balances[msg.sender];
+
+        if (amount == 0) {
+            revert NoStake();
+        }
+
+        // Calcular las recompensas acumuladas antes
+        // de eliminar la participacion del usuario.
+        uint256 forfeitedRewards = rewards[msg.sender];
+
+        // El usuario deja de participar en el farming.
+        balances[msg.sender] = 0;
+        totalStaked -= amount;
+
+        // Renuncia a las recompensas pendientes.
+        rewards[msg.sender] = 0;
+
+        // Registrar saldo del contrato antes de retirar.
+        uint256 balanceBefore = lpToken.balanceOf(address(this));
+
+        // Devolver todos los LP tokens.
+        lpToken.safeTransfer(msg.sender, amount);
+
+        uint256 balanceAfter = lpToken.balanceOf(address(this));
+
+        // Verificar que han salido exactamente los LP.
+        if (balanceAfter > balanceBefore || balanceBefore - balanceAfter != amount) {
+            revert UnsupportedToken();
+        }
+
+        emit EmergencyWithdrawn(msg.sender, amount, forfeitedRewards);
     }
 
     // ----------------------------------------------------
