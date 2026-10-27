@@ -2,121 +2,242 @@
 pragma solidity ^0.8.24;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 contract YieldFarm is ReentrancyGuard {
     using SafeERC20 for IERC20;
 
-    // Token LP que aceptamos en el farming.
+    uint256 public constant PRECISION = 1e18;
+
     IERC20 public immutable lpToken;
+    IERC20 public immutable rewardToken;
+    address public immutable owner;
 
-    // Participacion depositada de cada usuario.
+    // Depositos del Dia 41.
     mapping(address => uint256) public balances;
-
-    // Total de LP tokens depositados.
     uint256 public totalStaked;
 
-    // Errores personalizados.
+    // Estado del programa de recompensas.
+    uint256 public rewardRate;
+    uint256 public periodFinish;
+    uint256 public lastUpdateTime;
+    uint256 public rewardPerTokenStored;
+    bool public rewardsStarted;
+
+    // Contabilidad individual.
+    mapping(address => uint256) public userRewardPerTokenPaid;
+    mapping(address => uint256) public rewards;
+
     error InvalidLPToken();
+    error InvalidRewardToken();
     error ZeroAmount();
     error InsufficientBalance();
     error UnsupportedToken();
+    error Unauthorized();
+    error InvalidRewardSchedule();
+    error RewardsAlreadyStarted();
+    error NoRewards();
 
-    // Eventos para que las aplicaciones
-    // externas puedan seguir las operaciones.
     event Deposited(address indexed user, uint256 amount);
-
     event Withdrawn(address indexed user, uint256 amount);
+    event RewardProgramStarted(uint256 amount, uint256 duration, uint256 rewardRate);
+    event RewardClaimed(address indexed user, uint256 amount);
 
-    constructor(address lpToken_) {
-        // No permitimos direcciones nulas
-        // ni direcciones sin codigo.
+    constructor(address lpToken_, address rewardToken_) {
         if (lpToken_ == address(0) || lpToken_.code.length == 0) {
             revert InvalidLPToken();
         }
 
+        if (rewardToken_ == address(0) || rewardToken_.code.length == 0 || rewardToken_ == lpToken_) {
+            revert InvalidRewardToken();
+        }
+
         lpToken = IERC20(lpToken_);
+        rewardToken = IERC20(rewardToken_);
+        owner = msg.sender;
     }
 
-    // ---------------------------------------------------
-    // DEPOSITAR LP TOKENS
-    // ---------------------------------------------------
+    // ----------------------------------------------------
+    // 1. ULTIMO INSTANTE QUE PUEDE GENERAR RECOMPENSAS
+    // ----------------------------------------------------
 
-    function deposit(uint256 amount) external nonReentrant {
+    function lastTimeRewardApplicable() public view returns (uint256) {
+        return Math.min(block.timestamp, periodFinish);
+    }
+
+    // ----------------------------------------------------
+    // 2. RECOMPENSA GLOBAL ACUMULADA POR LP
+    // ----------------------------------------------------
+
+    function rewardPerToken() public view returns (uint256) {
+        if (!rewardsStarted || totalStaked == 0) {
+            return rewardPerTokenStored;
+        }
+
+        uint256 applicableTime = lastTimeRewardApplicable();
+
+        if (applicableTime <= lastUpdateTime) {
+            return rewardPerTokenStored;
+        }
+
+        uint256 elapsed = applicableTime - lastUpdateTime;
+
+        uint256 emitted = elapsed * rewardRate;
+
+        uint256 increment = Math.mulDiv(emitted, PRECISION, totalStaked);
+
+        return rewardPerTokenStored + increment;
+    }
+
+    // ----------------------------------------------------
+    // 3. RECOMPENSAS PENDIENTES DE UN USUARIO
+    // ----------------------------------------------------
+
+    function earned(address user) public view returns (uint256) {
+        uint256 deltaRPT = rewardPerToken() - userRewardPerTokenPaid[user];
+
+        uint256 newlyEarned = Math.mulDiv(balances[user], deltaRPT, PRECISION);
+
+        return rewards[user] + newlyEarned;
+    }
+
+    // ----------------------------------------------------
+    // 4. ACTUALIZAR LA CONTABILIDAD
+    // ----------------------------------------------------
+
+    modifier updateReward(address user) {
+        rewardPerTokenStored = rewardPerToken();
+
+        if (rewardsStarted) {
+            lastUpdateTime = lastTimeRewardApplicable();
+        }
+
+        if (user != address(0)) {
+            rewards[user] = earned(user);
+
+            userRewardPerTokenPaid[user] = rewardPerTokenStored;
+        }
+
+        _;
+    }
+
+    // ----------------------------------------------------
+    // 5. FINANCIAR E INICIAR LAS RECOMPENSAS
+    // ----------------------------------------------------
+
+    function startRewards(uint256 amount, uint256 duration) external nonReentrant {
+        if (msg.sender != owner) {
+            revert Unauthorized();
+        }
+
+        // En este Dia 42 solo admitimos
+        // un programa de recompensas.
+        if (rewardsStarted) {
+            revert RewardsAlreadyStarted();
+        }
+
+        if (amount == 0 || duration == 0 || amount / duration == 0) {
+            revert InvalidRewardSchedule();
+        }
+
+        uint256 beforeBalance = rewardToken.balanceOf(address(this));
+
+        rewardToken.safeTransferFrom(msg.sender, address(this), amount);
+
+        uint256 afterBalance = rewardToken.balanceOf(address(this));
+
+        if (afterBalance < beforeBalance || afterBalance - beforeBalance != amount) {
+            revert UnsupportedToken();
+        }
+
+        // Se paga desde un fondo recibido previamente.
+        // La division entera puede dejar un resto.
+        rewardRate = amount / duration;
+        periodFinish = block.timestamp + duration;
+        lastUpdateTime = block.timestamp;
+        rewardsStarted = true;
+
+        emit RewardProgramStarted(amount, duration, rewardRate);
+    }
+
+    // ----------------------------------------------------
+    // 6. DEPOSITAR LP TOKENS
+    // ----------------------------------------------------
+
+    function deposit(uint256 amount) external nonReentrant updateReward(msg.sender) {
         if (amount == 0) {
             revert ZeroAmount();
         }
 
         uint256 balanceBefore = lpToken.balanceOf(address(this));
 
-        // Pedimos al ERC-20 que mueva los tokens
-        // desde la wallet hacia nuestro farming.
         lpToken.safeTransferFrom(msg.sender, address(this), amount);
 
         uint256 balanceAfter = lpToken.balanceOf(address(this));
 
-        // Comprobamos que realmente han entrado
-        // los LP tokens que esperabamos.
-        if (balanceAfter < balanceBefore) {
+        if (balanceAfter < balanceBefore || balanceAfter - balanceBefore != amount) {
             revert UnsupportedToken();
         }
 
-        if (balanceAfter - balanceBefore != amount) {
-            revert UnsupportedToken();
-        }
-
-        // Registramos el nuevo deposito.
         balances[msg.sender] += amount;
         totalStaked += amount;
 
         emit Deposited(msg.sender, amount);
     }
 
-    // ---------------------------------------------------
-    // RETIRAR LP TOKENS
-    // ---------------------------------------------------
+    // ----------------------------------------------------
+    // 7. RETIRAR LP TOKENS
+    // ----------------------------------------------------
 
-    function withdraw(uint256 amount) external nonReentrant {
+    function withdraw(uint256 amount) external nonReentrant updateReward(msg.sender) {
         if (amount == 0) {
             revert ZeroAmount();
         }
 
-        // Cada usuario solo puede retirar
-        // su propia participacion.
         if (balances[msg.sender] < amount) {
             revert InsufficientBalance();
         }
 
-        // Actualizar estado ANTES de transferir:
-        // Checks-Effects-Interactions.
         balances[msg.sender] -= amount;
         totalStaked -= amount;
 
         uint256 balanceBefore = lpToken.balanceOf(address(this));
 
-        // Devolver LP tokens al usuario.
         lpToken.safeTransfer(msg.sender, amount);
 
         uint256 balanceAfter = lpToken.balanceOf(address(this));
 
-        // Debe salir exactamente la cantidad pedida.
-        if (balanceAfter > balanceBefore) {
-            revert UnsupportedToken();
-        }
-
-        if (balanceBefore - balanceAfter != amount) {
+        if (balanceAfter > balanceBefore || balanceBefore - balanceAfter != amount) {
             revert UnsupportedToken();
         }
 
         emit Withdrawn(msg.sender, amount);
     }
 
-    // ---------------------------------------------------
-    // CONSULTAR DEPOSITO DE UNA DIRECCION
-    // ---------------------------------------------------
+    // ----------------------------------------------------
+    // 8. RECLAMAR RECOMPENSAS
+    // ----------------------------------------------------
+
+    function claimRewards() external nonReentrant updateReward(msg.sender) {
+        uint256 amount = rewards[msg.sender];
+
+        if (amount == 0) {
+            revert NoRewards();
+        }
+
+        // Actualizamos antes de transferir.
+        rewards[msg.sender] = 0;
+
+        rewardToken.safeTransfer(msg.sender, amount);
+
+        emit RewardClaimed(msg.sender, amount);
+    }
+
+    // ----------------------------------------------------
+    // 9. CONSULTAS
+    // ----------------------------------------------------
 
     function stakedBalance(address user) external view returns (uint256) {
         return balances[user];

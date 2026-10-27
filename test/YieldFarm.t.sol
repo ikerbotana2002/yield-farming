@@ -5,10 +5,12 @@ import {Test} from "forge-std/Test.sol";
 
 import {MockLPToken} from "../src/MockLPToken.sol";
 import {YieldFarm} from "../src/YieldFarm.sol";
+import {MockRewardToken} from "../src/MockRewardToken.sol";
 
 contract YieldFarmTest is Test {
     MockLPToken lpToken;
     YieldFarm farm;
+    MockRewardToken rewardToken;
 
     address alice = address(0xA1);
     address bob = address(0xB1);
@@ -16,7 +18,9 @@ contract YieldFarmTest is Test {
 
     function setUp() public {
         lpToken = new MockLPToken();
-        farm = new YieldFarm(address(lpToken));
+        rewardToken = new MockRewardToken();
+
+        farm = new YieldFarm(address(lpToken), address(rewardToken));
 
         lpToken.transfer(alice, 500 ether);
         lpToken.transfer(bob, 500 ether);
@@ -190,13 +194,13 @@ contract YieldFarmTest is Test {
     function test_RevertWhen_InvalidLPToken() public {
         vm.expectRevert(YieldFarm.InvalidLPToken.selector);
 
-        new YieldFarm(address(0));
+        new YieldFarm(address(0), address(rewardToken));
     }
 
     function test_RevertWhen_AddressHasNoCode() public {
         vm.expectRevert(YieldFarm.InvalidLPToken.selector);
 
-        new YieldFarm(address(0x1234));
+        new YieldFarm(address(0x1234), address(rewardToken));
     }
 
     // ----------------------------------------------------
